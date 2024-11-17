@@ -1,12 +1,12 @@
 from PIL import Image
-from utils2 import Utils2
+from utils import Utils
 
 def process_inputs(prompt: str, image_path: str):
     # Display the prompt
     print("Your Prompt:")
     print(prompt)
-    utils2_obj = Utils2()
-    utils2_obj.llm_call(prompt)
+    utils_obj = Utils()
+    utils_obj.llm_call(prompt)
     # print(res)
     # # Load and display the image
     # try:
