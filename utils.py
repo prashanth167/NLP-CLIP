@@ -5,7 +5,7 @@ from transformers import (
     CLIPTextModelWithProjection,
     CLIPVisionModelWithProjection,
     BitsAndBytesConfig,
-    AutoModelForCausalLM
+    AutoModelForCausalLM,
 )
 from diffusers import DiffusionPipeline
 from ip_adapter import IPAdapterXL
@@ -29,13 +29,11 @@ class Utils:
             "openai/clip-vit-base-patch32"
         )
 
-        self.text2img: DiffusionPipeline = (
-            DiffusionPipeline.from_pretrained(
-                "stabilityai/stable-diffusion-xl-base-1.0",
-                torch_dtype=torch.float16,
-                use_safetensors=True,
-                variant="fp16",
-            )
+        self.text2img: DiffusionPipeline = DiffusionPipeline.from_pretrained(
+            "stabilityai/stable-diffusion-xl-base-1.0",
+            torch_dtype=torch.float16,
+            use_safetensors=True,
+            variant="fp16",
         )
 
         self.device = device
@@ -80,7 +78,9 @@ class Utils:
         self.text2img.to(self.device)
 
         image = self.text2img(
-            prompt=text, ip_adapter_image=image, num_inference_steps=500,
+            prompt=text,
+            ip_adapter_image=image,
+            num_inference_steps=500,
             # negative_prompt="deformed, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality",
         ).images[0]
         self.text2img.to("cpu")
@@ -88,16 +88,14 @@ class Utils:
 
         return image
 
-
-
-    def encode_image(self,image_features):
+    def encode_image(self, image_features):
         return self.clip_encode_image(image_features)
 
-    def encode_text(self,phrase):
+    def encode_text(self, phrase):
         return self.clip_encode_text(phrase)
 
     def subtract_embeddings(self, embedding1, embedding2):
-        return embedding1 - embedding2  
+        return embedding1 - embedding2
 
     def add_embeddings(embedding1, embedding2):
         return embedding1 + embedding2
@@ -108,115 +106,175 @@ class Utils:
     def refine_image_with_phrase(self, image, phrase):
         return self.ipadapter_text2image(phrase, image)
 
-    def process_json(self,tasks):
-        results = {}  
-        
+    def process_json(self, tasks):
+        results = {}
+
         for task in tasks:
             task_type = task.get("task")
             action = task.get("action")
-            
+
             if task_type == "clip_model":
                 if action == "encode_image":
                     input_data = task["input_variables"][0]
                     output = self.encode_image(input_data)
                     results[task["output_variable"]] = output
-                
+
                 elif action == "encode_text":
                     input_phrase = task["input_phrases"][0]
                     output = self.encode_text(input_phrase)
                     results[task["output_variable"]] = output
-            
+
             elif task_type == "compute":
                 var1, var2 = task["input_variables"]
                 if action == "subtract":
                     output = self.subtract_embeddings(results[var1], results[var2])
                     results[task["output_variable"]] = output
-                
+
                 elif action == "add":
                     output = self.add_embeddings(results[var1], results[var2])
                     results[task["output_variable"]] = output
-            
+
             elif task_type == "text2image" and action == "generate_image":
                 input_var = task["input_variables"][0]
                 output = self.generate_image_from_embedding(results[input_var])
                 results[task["output_variable"]] = output
-            
+
             elif task_type == "ip_adapter" and action == "refine_image":
                 input_image = results[task["input_image"]]
                 input_phrase = task["input_phrases"][0]
                 output = self.refine_image_with_phrase(input_image, input_phrase)
 
+    def remove_extra_spaces(self, generated_answer):
+        pattern = r"\s+"
+        return re.sub(pattern, "", generated_answer)
 
-    def llm_call(self,input_question):
-            with open("prompt.txt", "r", encoding='utf-8') as file:
-                input_question = file.read().strip() 
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
+    def extract_json(self, json_text):
+        json_pattern = r"\[\{\"tasks\":.*[\]\}]"
+        incomplete_json = re.findall(json_pattern, json_text)
+        if not incomplete_json:
+            raise ValueError("No JSON found matching the pattern.")
+        return incomplete_json[-1]
 
-            # Set seed for reproducibility
-            seed = 42
-            torch.manual_seed(seed)
-            torch.cuda.manual_seed_all(seed)
+    def balance_json(self, incomplete_json):
+        stack = []
+        balanced_json = incomplete_json
 
-            # Load the tokenizer
-            print("Loading tokenizer...")
-            model_path = "/home/ptummal3/Downloads/clip/llama-3.1-transformers-8b-instruct-v2"
-            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False, padding_side='left')
-            tokenizer.pad_token = tokenizer.eos_token
+        for char in incomplete_json:
+            if char in "[{":
+                stack.append(char)
+            elif char in "]}":
+                if stack and (
+                    (char == "]" and stack[-1] == "[")
+                    or (char == "}" and stack[-1] == "{")
+                ):
+                    stack.pop()
+                else:
+                    stack.append(char)
 
-            # Add special tokens and resize embeddings
-            special_tokens_dict = {'additional_special_tokens': ['<s>', '</s>', '[INST]', '[/INST]', '<<SYS>>', '<</SYS>>']}
-            tokenizer.add_special_tokens(special_tokens_dict)
+        for unmatched in reversed(stack):
+            if unmatched == "[":
+                balanced_json += "]"
+            elif unmatched == "{":
+                balanced_json += "}"
 
-            # Define system message
-            system_message = ""
+        return balanced_json
 
-            # Load the base model with 8-bit precision
-            print("Loading model...")
-            # bnb_config = BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=6.0)
+    def parse_json(self, balanced_json):
+        return json.loads(balanced_json)
 
-            device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    def clean_output(self, generated_answer):
+        json_text = self.remove_extra_spaces(generated_answer)
+        incomplete_json = self.extract_json(json_text)
+        balanced_json = self.balance_json(incomplete_json)
+        final_json = self.parse_json(balanced_json)
+        return final_json
 
-            model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                # quantization_config=bnb_config,
-                device_map=None  # Remove or set to None to load the model on a single GPU
-            ).to(device)
+    def format_question(self, question, system_message):
+        return f"<s>[INST] <<SYS>>\n{system_message}\n<</SYS>>\n\n{question} [/INST]"
 
-            # Resize token embeddings in case new tokens were added
-            model.resize_token_embeddings(len(tokenizer))
+    def llm_call(self, input_question):
+        with open("prompt.txt", "r", encoding="utf-8") as file:
+            input_question = file.read().strip()
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
-            # Set the padding token ID
-            model.config.pad_token_id = tokenizer.pad_token_id
+        # Set seed for reproducibility
+        seed = 42
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
-            # Function to format the input question
-            def format_question(question):
-                return f"<s>[INST] <<SYS>>\n{system_message}\n<</SYS>>\n\n{question} [/INST]"
+        # Load the tokenizer
+        print("Loading tokenizer...")
+        model_path = (
+            "/home/ptummal3/Downloads/clip/llama-3.1-transformers-8b-instruct-v2"
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, use_fast=False, padding_side="left"
+        )
+        tokenizer.pad_token = tokenizer.eos_token
 
-            # Prepare and format the single prompt
-            prompt = format_question(input_question)
+        # Add special tokens and resize embeddings
+        special_tokens_dict = {
+            "additional_special_tokens": [
+                "<s>",
+                "</s>",
+                "[INST]",
+                "[/INST]",
+                "<<SYS>>",
+                "<</SYS>>",
+            ]
+        }
+        tokenizer.add_special_tokens(special_tokens_dict)
 
-            # Tokenize prompt
-            print("Tokenizing input...")
-            inputs = tokenizer(prompt, return_tensors='pt', padding=True, truncation=True, max_length=4096).to(device)
+        # Define system message
+        system_message = ""
 
-            # Generate output
-            print("Generating output...")
-            with torch.no_grad():
-                output = model.generate(
-                    input_ids=inputs['input_ids'],
-                    attention_mask=inputs['attention_mask'],
-                    max_new_tokens=512,
-                    do_sample=False,
-                    num_beams=1,
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                    use_cache=True,
-                )
+        # Load the base model with 8-bit precision
+        print("Loading model...")
+        # bnb_config = BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=6.0)
 
-            output_text = tokenizer.decode(output[0], skip_special_tokens=True)
-            generated_answer = output_text[len(prompt):].strip()
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-            print(f"\nGenerated Answer: {generated_answer}")
-            model.to('cpu')
-            self.process_json(generated_answer)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            # quantization_config=bnb_config,
+            device_map=None,  # Remove or set to None to load the model on a single GPU
+        ).to(device)
+
+        # Resize token embeddings in case new tokens were added
+        model.resize_token_embeddings(len(tokenizer))
+
+        # Set the padding token ID
+        model.config.pad_token_id = tokenizer.pad_token_id
+
+        # Function to format the input question
+
+        # Prepare and format the single prompt
+        prompt = self.format_question(input_question, system_message)
+
+        # Tokenize prompt
+        print("Tokenizing input...")
+        inputs = tokenizer(
+            prompt, return_tensors="pt", padding=True, truncation=True, max_length=4096
+        ).to(device)
+
+        # Generate output
+        print("Generating output...")
+        with torch.no_grad():
+            output = model.generate(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                max_new_tokens=512,
+                do_sample=False,
+                num_beams=1,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                use_cache=True,
+            )
+
+        output_text = tokenizer.decode(output[0], skip_special_tokens=True)
+        generated_answer = output_text[len(prompt) :].strip()
+
+        cleaned_output = self.clean_output(generated_answer)
+        model.to("cpu")
+        self.process_json(cleaned_output)
