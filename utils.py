@@ -107,10 +107,12 @@ class Utils:
         return self.ipadapter_text2image(phrase, image)
 
     def process_json(self, tasks):
+        print(tasks)
         results = {}
-
+    
         for task in tasks:
-            task_type = task.get("task")
+            print(task)
+            task_type = task.get("function")
             action = task.get("action")
 
             if task_type == "clip_model":
@@ -145,11 +147,13 @@ class Utils:
                 output = self.refine_image_with_phrase(input_image, input_phrase)
 
     def remove_extra_spaces(self, generated_answer):
-        pattern = r"\s+"
-        return re.sub(pattern, "", generated_answer)
+        cleaned = re.sub(r'(?<!\w) +| +(?!\w)', '', generated_answer)
+        cleaned = re.sub(r'[\t\n\r\f\v]+', '',cleaned)
+        return cleaned
 
     def extract_json(self, json_text):
-        json_pattern = r"\[\{\"tasks\":.*[\]\}]"
+        # json_pattern = r"\[\{\"tasks\":.*[\]\}]"
+        json_pattern = r"\[\{.*"
         incomplete_json = re.findall(json_pattern, json_text)
         if not incomplete_json:
             raise ValueError("No JSON found matching the pattern.")
@@ -180,7 +184,7 @@ class Utils:
         return balanced_json
 
     def parse_json(self, balanced_json):
-        return json.loads(balanced_json)
+        return json.loads(balanced_json)[0]
 
     def clean_output(self, generated_answer):
         json_text = self.remove_extra_spaces(generated_answer)
@@ -193,7 +197,7 @@ class Utils:
         return f"<s>[INST] <<SYS>>\n{system_message}\n<</SYS>>\n\n{question} [/INST]"
 
     def llm_call(self, input_question):
-        with open("prompt.txt", "r", encoding="utf-8") as file:
+        with open("prompt2.txt", "r", encoding="utf-8") as file:
             input_question = file.read().strip()
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -273,8 +277,11 @@ class Utils:
             )
 
         output_text = tokenizer.decode(output[0], skip_special_tokens=True)
-        generated_answer = output_text[len(prompt) :].strip()
+        # generated_answer = output_text[len(prompt) :].strip()
 
-        cleaned_output = self.clean_output(generated_answer)
+        # print("Generated Text : ",  output_text)
+
+        cleaned_output = self.clean_output(output_text)
+        # print("clened_output: ", cleaned_output)
         model.to("cpu")
         self.process_json(cleaned_output)
