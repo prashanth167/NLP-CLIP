@@ -12,6 +12,7 @@ from ip_adapter import IPAdapterXL
 import json
 import re
 from peft import PeftModel
+from PIL import Image
 
 
 class Utils:
@@ -30,13 +31,16 @@ class Utils:
         )
 
         self.text2img: DiffusionPipeline = DiffusionPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-xl-base-1.0",
+            # "stabilityai/stable-diffusion-xl-base-1.0",
+            "stabilityai/stable-diffusion-2-1",
             torch_dtype=torch.float16,
             use_safetensors=True,
             variant="fp16",
         )
 
         self.device = device
+
+        self.results = { 'V0': '', 'T0': '', 'T1': '', 'I0': '', 'I2': '' }
 
         # self.text2img.to(self.device)
 
@@ -62,14 +66,54 @@ class Utils:
 
         return image_features
 
-    def text2image(self, text):
+    # def text2image(self, text):
+    #     self.text2img.to(self.device)
+    #     # if self.text2img is None:
+    #     #     print("Class not working")
+    #     image = self.text2img(text, num_inference_steps=50).images[0]
+    #     self.text2img.to("cpu")
+
+    #     return image
+
+    def text2image(self, text_embeddings):
         self.text2img.to(self.device)
-        # if self.text2img is None:
-        #     print("Class not working")
-        image = self.text2img(text, num_inference_steps=50).images[0]
+        image = self.text2img(prompt_embeds=text_embeddings, num_inference_steps=50).images[0]
         self.text2img.to("cpu")
 
         return image
+
+    # def text2image(self, text_embeddings):
+    #     self.text2img.to(self.device)
+        
+    #     # Ensure embeddings have the correct shape
+    #     if text_embeddings.dim() == 2:
+    #         # Add sequence length dimension
+    #         text_embeddings = text_embeddings.unsqueeze(1)  # Shape: (batch_size, 1, embedding_dim)
+        
+    #     # Get batch size from text_embeddings
+    #     batch_size = text_embeddings.shape[0]
+        
+    #     # Generate negative_prompt_embeds with matching shape
+    #     # For simplicity, use zeros or duplicate the positive embeddings
+    #     negative_prompt_embeds = torch.zeros_like(text_embeddings)
+    #     # Or duplicate the embeddings
+    #     # negative_prompt_embeds = text_embeddings.clone()
+        
+    #     # Ensure batch sizes match
+    #     assert negative_prompt_embeds.shape[0] == text_embeddings.shape[0], "Batch sizes do not match."
+        
+    #     # Run the pipeline
+    #     image = self.text2img(
+    #         prompt_embeds=text_embeddings,
+    #         negative_prompt_embeds=negative_prompt_embeds,
+    #         num_inference_steps=50
+    #     ).images[0]
+        
+    #     self.text2img.to("cpu")
+    #     return image
+
+
+
 
     def ipadapter_text2image(self, text, image=None):
         self.text2img.load_ip_adapter(
@@ -97,7 +141,7 @@ class Utils:
     def subtract_embeddings(self, embedding1, embedding2):
         return embedding1 - embedding2
 
-    def add_embeddings(embedding1, embedding2):
+    def add_embeddings(self, embedding1, embedding2):
         return embedding1 + embedding2
 
     def generate_image_from_embedding(self, embedding):
@@ -107,44 +151,47 @@ class Utils:
         return self.ipadapter_text2image(phrase, image)
 
     def process_json(self, tasks):
-        print(tasks)
-        results = {}
-    
-        for task in tasks:
-            print(task)
+        
+        # image encoding
+        image = Image.open('red_dress.jpg')
+        self.results['V0'] = self.clip_encode_image(image)
+        # print(self.results.keys())
+
+
+        for task_name, task in tasks.items():
             task_type = task.get("function")
             action = task.get("action")
+            input_text = task.get("input_text")
+            input_variables = task.get("input_variables")
+            output_variable = task.get("output_variable")
 
-            if task_type == "clip_model":
-                if action == "encode_image":
-                    input_data = task["input_variables"][0]
-                    output = self.encode_image(input_data)
-                    results[task["output_variable"]] = output
+            print(task_type, action, input_text, input_variables, output_variable)
+            
 
-                elif action == "encode_text":
-                    input_phrase = task["input_phrases"][0]
-                    output = self.encode_text(input_phrase)
-                    results[task["output_variable"]] = output
+
+            if task_type == "clip_encode_text":
+                output = self.encode_text(input_text[0])
+                self.results[output_variable] = output
 
             elif task_type == "compute":
-                var1, var2 = task["input_variables"]
+                var1, var2 = input_variables[0], input_variables[1]
                 if action == "subtract":
-                    output = self.subtract_embeddings(results[var1], results[var2])
-                    results[task["output_variable"]] = output
+                    output = self.subtract_embeddings(self.results[var1], self.results[var2])
+                    self.results[output_variable] = output
 
                 elif action == "add":
-                    output = self.add_embeddings(results[var1], results[var2])
-                    results[task["output_variable"]] = output
+                    output = self.add_embeddings(self.results[var1], self.results[var2])
+                    self.results[output_variable] = output
+                    print(self.results)
 
-            elif task_type == "text2image" and action == "generate_image":
-                input_var = task["input_variables"][0]
-                output = self.generate_image_from_embedding(results[input_var])
-                results[task["output_variable"]] = output
-
-            elif task_type == "ip_adapter" and action == "refine_image":
-                input_image = results[task["input_image"]]
-                input_phrase = task["input_phrases"][0]
-                output = self.refine_image_with_phrase(input_image, input_phrase)
+            elif task_type == "text2image":
+                input_var = input_variables[0]
+                output = self.generate_image_from_embedding(self.results[input_var])
+                self.results[output_variable] = output
+            # elif task_type == "ipadapter_text2image":
+            #     input_image = results[task["input_image"]]
+            #     input_phrase = task["input_phrases"][0]
+            #     output = self.refine_image_with_phrase(input_image, input_phrase)
 
     def remove_extra_spaces(self, generated_answer):
         cleaned = re.sub(r'(?<!\w) +| +(?!\w)', '', generated_answer)
@@ -197,7 +244,7 @@ class Utils:
         return f"<s>[INST] <<SYS>>\n{system_message}\n<</SYS>>\n\n{question} [/INST]"
 
     def llm_call(self, input_question):
-        with open("prompt2.txt", "r", encoding="utf-8") as file:
+        with open("prompt3.txt", "r", encoding="utf-8") as file:
             input_question = file.read().strip()
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
