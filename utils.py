@@ -7,130 +7,153 @@ from transformers import (
     BitsAndBytesConfig,
     AutoModelForCausalLM,
 )
-from diffusers import DiffusionPipeline
+from diffusers import DiffusionPipeline, StableDiffusionPipeline
 from ip_adapter import IPAdapterXL
 import json
 import re
 from peft import PeftModel
 from PIL import Image
 
+from diffusers import KandinskyV22PriorPipeline, KandinskyV22Pipeline
+import torch
+
+from diffusers import AutoPipelineForText2Image
+
+
 
 class Utils:
-    def __init__(self, device="cuda"):
+    def __init__(self, device="cuda:0"):
 
-        self.tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-        self.clip_text_encoder = CLIPTextModelWithProjection.from_pretrained(
-            "openai/clip-vit-base-patch32"
-        )
+        # self.tokenizer = AutoTokenizer.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
+        # self.clip_text_encoder = CLIPTextModelWithProjection.from_pretrained(
+        #     "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+        # )
 
-        self.image_processor = AutoImageProcessor.from_pretrained(
-            "openai/clip-vit-base-patch32"
-        )
-        self.clip_image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-            "openai/clip-vit-base-patch32"
-        )
+        # self.image_processor = AutoImageProcessor.from_pretrained(
+        #     "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+        # )
+        # self.clip_image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+        #     "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+        # )
 
-        self.text2img: DiffusionPipeline = DiffusionPipeline.from_pretrained(
-            # "stabilityai/stable-diffusion-xl-base-1.0",
-            "stabilityai/stable-diffusion-2-1",
-            torch_dtype=torch.float16,
-            use_safetensors=True,
-            variant="fp16",
-        )
+        # self.text2img: DiffusionPipeline = StableDiffusionPipeline.from_pretrained(
+        #     # "stabilityai/stable-diffusion-xl-base-1.0",
+        #     "stabilityai/stable-diffusion-2-1",
+        #     torch_dtype=torch.float16,
+        #     use_safetensors=True,
+        #     variant="fp16",
+        # )
+        
+        # Kandinsky model
+        self.prior_pipeline = KandinskyV22PriorPipeline.from_pretrained("kandinsky-community/kandinsky-2-2-prior", torch_dtype=torch.float16)
+        self.pipeline = KandinskyV22Pipeline.from_pretrained("kandinsky-community/kandinsky-2-2-decoder", torch_dtype=torch.float16)
+
+        self.clip_vision_model = self.prior_pipeline.image_encoder
+        self.preprocess = self.prior_pipeline.image_processor
+
+        
+        # IP Adapter
+        self.sd_pipeline = AutoPipelineForText2Image.from_pretrained("stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16)
+        self.sd_pipeline.load_ip_adapter("h94/IP-Adapter", subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin")
+        self.sd_pipeline.set_ip_adapter_scale(0.6)
 
         self.device = device
 
         self.results = { 'V0': '', 'T0': '', 'T1': '', 'I0': '', 'I2': '' }
-
-        # self.text2img.to(self.device)
-
+        
     def clip_encode_text(self, text):
-        text = self.tokenizer(
-            text, return_tensors="pt", padding="max_length", truncation=True
-        )
-        text = {k: v.to(self.device) for k, v in text.items()}
+        # text = self.tokenizer(
+        #     text, return_tensors="pt", padding="max_length", truncation=True
+        # )
+        # text = {k: v.to(self.device) for k, v in text.items()}
 
-        self.clip_text_encoder.to(self.device)
-        text_features = self.clip_text_encoder(**text).text_embeds
-        self.clip_text_encoder.to("cpu")
+        # self.clip_text_encoder.to(self.device)
+        # outputs = self.clip_text_encoder(**text)
+        # text_features = outputs.text_embeds
+        # last_hidden_state = outputs.last_hidden_state
+        # self.clip_text_encoder.to("cpu")
 
-        return text_features
+        # return text_features, last_hidden_state
+        
+        negative_prompt = "deformed, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality"
+        self.prior_pipeline.to(self.device)
+        image_embeds2, _ = self.prior_pipeline(text, negative_prompt, guidance_scale=1.0, num_inference_steps=100, generator=torch.Generator().manual_seed(42)).to_tuple()
+        # self.prior_pipeline.to("cpu")
+        return image_embeds2
 
     def clip_encode_image(self, image):
-        image = self.image_processor(images=image, return_tensors="pt")
-        image = {k: v.to(self.device) for k, v in image.items()}
+        # image = self.image_processor(images=image, return_tensors="pt")
+        # image = {k: v.to(self.device) for k, v in image.items()}
 
-        self.clip_image_encoder.to(self.device)
-        image_features = self.clip_image_encoder(**image).image_embeds
-        self.clip_image_encoder.to("cpu")
+        # self.clip_image_encoder.to(self.device)
+        # image_features = self.clip_image_encoder(**image).image_embeds
+        # self.clip_image_encoder.to("cpu")
 
+        # return image_features
+        # image = self.preprocess(images=image, return_tensors="pt").to("cuda")
+        # self.clip_vision_model.to("cuda")
+        # print("aaa", self.clip_vision_model(image))
+        # image_features = self.clip_vision_model(image).image_embeds
+        # self.clip_vision_model.to("cpu")
+        # return image_features
+
+        inputs = self.preprocess(images=image, return_tensors="pt").to(self.device)
+        print("Processed image tensor shape:", inputs['pixel_values'].shape)
+        self.clip_vision_model.to("cuda:0")
+        with torch.no_grad():
+            outputs = self.clip_vision_model(pixel_values=inputs['pixel_values'])
+            image_features = outputs.image_embeds
+        # self.clip_vision_model.to("cpu")
         return image_features
 
-    # def text2image(self, text):
-    #     self.text2img.to(self.device)
-    #     # if self.text2img is None:
-    #     #     print("Class not working")
-    #     image = self.text2img(text, num_inference_steps=50).images[0]
-    #     self.text2img.to("cpu")
+    def text2image(self, image_embeddings):
+        # negative_text_embeddings, negative_last_hidden_states = self.clip_encode_text("")
+        # self.text2img.to(self.device)
+        # # text_embeddings = text_embeddings
+        # image = self.text2img(prompt_embeds=text_embeddings, negative_prompt_embeds=negative_last_hidden_states, num_inference_steps=50).images[0]
+        # self.text2img.to("cpu")
 
-    #     return image
-
-    def text2image(self, text_embeddings):
-        self.text2img.to(self.device)
-        image = self.text2img(prompt_embeds=text_embeddings, num_inference_steps=50).images[0]
-        self.text2img.to("cpu")
-
-        return image
-
-    # def text2image(self, text_embeddings):
-    #     self.text2img.to(self.device)
-        
-    #     # Ensure embeddings have the correct shape
-    #     if text_embeddings.dim() == 2:
-    #         # Add sequence length dimension
-    #         text_embeddings = text_embeddings.unsqueeze(1)  # Shape: (batch_size, 1, embedding_dim)
-        
-    #     # Get batch size from text_embeddings
-    #     batch_size = text_embeddings.shape[0]
-        
-    #     # Generate negative_prompt_embeds with matching shape
-    #     # For simplicity, use zeros or duplicate the positive embeddings
-    #     negative_prompt_embeds = torch.zeros_like(text_embeddings)
-    #     # Or duplicate the embeddings
-    #     # negative_prompt_embeds = text_embeddings.clone()
-        
-    #     # Ensure batch sizes match
-    #     assert negative_prompt_embeds.shape[0] == text_embeddings.shape[0], "Batch sizes do not match."
-        
-    #     # Run the pipeline
-    #     image = self.text2img(
-    #         prompt_embeds=text_embeddings,
-    #         negative_prompt_embeds=negative_prompt_embeds,
-    #         num_inference_steps=50
-    #     ).images[0]
-        
-    #     self.text2img.to("cpu")
-    #     return image
-
-
-
+        # return image
+        _, negative_image_embeds =  self.prior_pipeline("", "deformed, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality", guidance_scale=2.0, num_inference_steps=20, generator=torch.Generator().manual_seed(42)).to_tuple()
+        self.pipeline.to(self.device)
+        image = self.pipeline(image_embeds=image_embeddings, negative_image_embeds=negative_image_embeds, height=768, width=768, generator=torch.Generator().manual_seed(42)).images[0]
+        # self.pipeline.to("cpu")
+        return image 
 
     def ipadapter_text2image(self, text, image=None):
-        self.text2img.load_ip_adapter(
-            "h94/IP-Adapter", subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin"
-        )
-        self.text2img.to(self.device)
+        # self.text2img.load_ip_adapter(
+        #     "h94/IP-Adapter", subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin"
+        # )
+        # self.text2img.to(self.device)
 
-        image = self.text2img(
+        # image = self.text2img(
+        #     prompt=text,
+        #     ip_adapter_image=image,
+        #     num_inference_steps=500,
+        #     # negative_prompt="deformed, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality",
+        # ).images[0]
+        # self.text2img.to("cpu")
+        # self.text2img.unload_ip_adapter()
+
+        # return image
+        self.sd_pipeline.to(self.device)
+        images = self.sd_pipeline(
             prompt=text,
             ip_adapter_image=image,
-            num_inference_steps=500,
-            # negative_prompt="deformed, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality",
-        ).images[0]
-        self.text2img.to("cpu")
-        self.text2img.unload_ip_adapter()
-
-        return image
+            negative_prompt="deformed, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality",
+            num_inference_steps=50,
+            generator=torch.Generator().manual_seed(42),    
+        ).images
+        try:
+            image = images[0]
+            if isinstance(image, Image.Image):  # Check if the returned object is indeed a PIL Image
+                image.save("final_image.jpg")
+                print("Image saved successfully as 'final_image.jpg'.")
+            else:
+                print("Error: No valid image was returned from text2image.")
+        except Exception as e:
+            print(f"An error occurred while saving the image: {e}")
+        return images[0]
 
     def encode_image(self, image_features):
         return self.clip_encode_image(image_features)
@@ -145,7 +168,18 @@ class Utils:
         return embedding1 + embedding2
 
     def generate_image_from_embedding(self, embedding):
-        return self.text2image(embedding)
+        try:
+            image = self.text2image(embedding)
+            if isinstance(image, Image.Image):  # Check if the returned object is indeed a PIL Image
+                image.save("output_image1.jpg")
+                print("Image saved successfully as 'output_image1.jpg'.")
+            else:
+                print("Error: No valid image was returned from text2image.")
+            return image
+        except Exception as e:
+            print(f"An error occurred while saving the image: {e}")
+        
+
 
     def refine_image_with_phrase(self, image, phrase):
         return self.ipadapter_text2image(phrase, image)
@@ -155,7 +189,10 @@ class Utils:
         # image encoding
         image = Image.open('red_dress.jpg')
         self.results['V0'] = self.clip_encode_image(image)
+        print("image encodings", self.results['V0'])
         # print(self.results.keys())
+
+        print("tasks", tasks)
 
 
         for task_name, task in tasks.items():
@@ -171,27 +208,33 @@ class Utils:
 
             if task_type == "clip_encode_text":
                 output = self.encode_text(input_text[0])
+                print("clip_encode_text", output)
                 self.results[output_variable] = output
+
 
             elif task_type == "compute":
                 var1, var2 = input_variables[0], input_variables[1]
                 if action == "subtract":
                     output = self.subtract_embeddings(self.results[var1], self.results[var2])
+                    print("subtraction", output)
                     self.results[output_variable] = output
 
                 elif action == "add":
                     output = self.add_embeddings(self.results[var1], self.results[var2])
                     self.results[output_variable] = output
+                    print("addition", output)
                     print(self.results)
 
             elif task_type == "text2image":
                 input_var = input_variables[0]
                 output = self.generate_image_from_embedding(self.results[input_var])
+                print("text_2_image", output)
                 self.results[output_variable] = output
-            # elif task_type == "ipadapter_text2image":
-            #     input_image = results[task["input_image"]]
-            #     input_phrase = task["input_phrases"][0]
-            #     output = self.refine_image_with_phrase(input_image, input_phrase)
+
+            elif task_type == "ipadapter_text2image":
+                input_image = self.results['Generated_Image']
+                input_phrase = input_text[0]
+                output = self.refine_image_with_phrase(input_image, input_phrase)
 
     def remove_extra_spaces(self, generated_answer):
         cleaned = re.sub(r'(?<!\w) +| +(?!\w)', '', generated_answer)
@@ -257,7 +300,7 @@ class Utils:
         # Load the tokenizer
         print("Loading tokenizer...")
         model_path = (
-            "/home/ptummal3/Downloads/clip/llama-3.1-transformers-8b-instruct-v2"
+            "/home/vkanakav/Downloads/clip/llama-3.1-transformers-8b-instruct-v2"
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_path, use_fast=False, padding_side="left"
@@ -332,3 +375,20 @@ class Utils:
         # print("clened_output: ", cleaned_output)
         model.to("cpu")
         self.process_json(cleaned_output)
+
+if __name__ == "__main__":
+    utils = Utils("cuda:0")
+    prompt = "A dog wearing a hat in the style of the dress."
+    image_path = "/home/cr8dl-user/abhiram/Zero-shot-Appearance-Transfer-using-CLIP-Abstraction/red_dress.jpg" 
+    
+    from PIL import Image
+    img = Image.open(image_path)
+    utils.text2img.to("cuda:0")
+
+    text_embeds, last_hidden_state = utils.clip_encode_text(prompt)
+    img = utils.text2image(last_hidden_state)
+    img.save("output.jpg")
+    # img = utils.text2img(prompt)
+    # utils.text2img.to("cuda:1")
+    # prompt_embeds, _ = utils.text2img.encode_prompt(prompt, device="cuda:1", num_images_per_prompt=1, do_classifier_free_guidance=True)
+    # print(prompt_embeds.shape)
