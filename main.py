@@ -1,27 +1,20 @@
 from PIL import Image
 from utils import Utils
+import os
 
-def process_inputs(prompt: str, image_path: str):
-    # Display the prompt
-    print("Your Prompt:")
-    print(prompt)
+def process_inputs(final_image_desc: str, folder_path: str):
+
     utils_obj = Utils()
-    utils_obj.llm_call(prompt)
-    # print(res)
-    # # Load and display the image
-    # try:
-    #     image = Image.open(image_path)
-    #     image.show()  # This will open the image using the default image viewer
-    # except Exception as e:
-    #     print(f"Error loading image: {e}")
 
+    for image_filename in os.listdir(folder_path):
+        image_path = os.path.join(folder_path, image_filename)
+        print("Image Path:")
+        print(image_path)
+        utils_obj.llm_call(final_image_desc, image_path)
 
-
-def main():
-    prompt = "Describe the scene depicted in this image."
-    image_path = "path/to/your/image.jpg" 
-    
-    process_inputs(prompt, image_path)
 
 if __name__ == "__main__":
-    main()
+    final_image_desc = "Final target image description : 'A dog wearing a hat that has a style of tshirt'"
+    folder_path = "cloth"
+    
+    process_inputs(final_image_desc, folder_path)

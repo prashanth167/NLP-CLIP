@@ -18,6 +18,7 @@ from diffusers import KandinskyV22PriorPipeline, KandinskyV22Pipeline
 import torch
 
 from diffusers import AutoPipelineForText2Image
+import requests
 
 
 
@@ -114,7 +115,7 @@ class Utils:
         # self.text2img.to("cpu")
 
         # return image
-        _, negative_image_embeds =  self.prior_pipeline("", "deformed, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality", guidance_scale=2.0, num_inference_steps=20, generator=torch.Generator().manual_seed(42)).to_tuple()
+        _, negative_image_embeds =  self.prior_pipeline("", "deformed, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality", guidance_scale=2.0, num_inference_steps=5, generator=torch.Generator().manual_seed(42)).to_tuple()
         self.pipeline.to(self.device)
         image = self.pipeline(image_embeds=image_embeddings, negative_image_embeds=negative_image_embeds, height=768, width=768, generator=torch.Generator().manual_seed(42)).images[0]
         # self.pipeline.to("cpu")
@@ -184,10 +185,10 @@ class Utils:
     def refine_image_with_phrase(self, image, phrase):
         return self.ipadapter_text2image(phrase, image)
 
-    def process_json(self, tasks):
+    def process_json(self, tasks, image_path):
         
         # image encoding
-        image = Image.open('red_dress.jpg')
+        image = Image.open(image_path)
         self.results['V0'] = self.clip_encode_image(image)
         print("image encodings", self.results['V0'])
         # print(self.results.keys())
@@ -195,7 +196,7 @@ class Utils:
         print("tasks", tasks)
 
 
-        for task_name, task in tasks.items():
+        for task in tasks:
             task_type = task.get("function")
             action = task.get("action")
             input_text = task.get("input_text")
@@ -285,96 +286,125 @@ class Utils:
 
     def format_question(self, question, system_message):
         return f"<s>[INST] <<SYS>>\n{system_message}\n<</SYS>>\n\n{question} [/INST]"
+    
+    def llm_call(self, final_image_desc, image_path):
+        # URL of the endpoint
+        url = "http://54.227.18.106/get-response"
 
-    def llm_call(self, input_question):
-        with open("prompt3.txt", "r", encoding="utf-8") as file:
-            input_question = file.read().strip()
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-
-        # Set seed for reproducibility
-        seed = 42
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-
-        # Load the tokenizer
-        print("Loading tokenizer...")
-        model_path = (
-            "/home/vkanakav/Downloads/clip/llama-3.1-transformers-8b-instruct-v2"
-        )
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_path, use_fast=False, padding_side="left"
-        )
-        tokenizer.pad_token = tokenizer.eos_token
-
-        # Add special tokens and resize embeddings
-        special_tokens_dict = {
-            "additional_special_tokens": [
-                "<s>",
-                "</s>",
-                "[INST]",
-                "[/INST]",
-                "<<SYS>>",
-                "<</SYS>>",
-            ]
+        # Parameters to send with the GET request
+        params = {
+        "prompt": final_image_desc
         }
-        tokenizer.add_special_tokens(special_tokens_dict)
 
-        # Define system message
-        system_message = ""
+        try:
+        # Make the GET request to the endpoint
+            response = requests.get(url, params=params)
 
-        # Load the base model with 8-bit precision
-        print("Loading model...")
-        # bnb_config = BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=6.0)
+            # Check if the request was successful
+            if response.status_code == 200:
+                # Parse and use the JSON response
+                data = response.json()
+                print("Response from the endpoint:")
+                print(data)
+                self.process_json(data, image_path)
+            else:
+                print(f"Failed to fetch data. HTTP Status Code: {response.status_code}")
+                print(f"Error Message: {response.text}")
 
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        except requests.exceptions.RequestException as e:
+            print(f"An error occurred: {e}")
 
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            # quantization_config=bnb_config,
-            device_map=None,  # Remove or set to None to load the model on a single GPU
-        ).to(device)
+    # def llm_call(self, final_image_desc, image_path):
+    #     with open("prompt3.txt", "r", encoding="utf-8") as file:
+    #         base_prompt = file.read().strip()
+        
+    #     full_prompt = base_prompt + "\n" + final_image_desc
+    #     torch.backends.cuda.matmul.allow_tf32 = True
+    #     torch.backends.cudnn.allow_tf32 = True
 
-        # Resize token embeddings in case new tokens were added
-        model.resize_token_embeddings(len(tokenizer))
+    #     # Set seed for reproducibility
+    #     seed = 42
+    #     torch.manual_seed(seed)
+    #     torch.cuda.manual_seed_all(seed)
 
-        # Set the padding token ID
-        model.config.pad_token_id = tokenizer.pad_token_id
+    #     # Load the tokenizer
+    #     print("Loading tokenizer...")
+    #     model_path = (
+    #         "/home/vkanakav/Downloads/clip/llama-3.1-transformers-8b-instruct-v2"
+    #     )
+    #     tokenizer = AutoTokenizer.from_pretrained(
+    #         model_path, use_fast=False, padding_side="left"
+    #     )
+    #     tokenizer.pad_token = tokenizer.eos_token
 
-        # Function to format the input question
+    #     # Add special tokens and resize embeddings
+    #     special_tokens_dict = {
+    #         "additional_special_tokens": [
+    #             "<s>",
+    #             "</s>",
+    #             "[INST]",
+    #             "[/INST]",
+    #             "<<SYS>>",
+    #             "<</SYS>>",
+    #         ]
+    #     }
+    #     tokenizer.add_special_tokens(special_tokens_dict)
 
-        # Prepare and format the single prompt
-        prompt = self.format_question(input_question, system_message)
+    #     # Define system message
+    #     system_message = ""
 
-        # Tokenize prompt
-        print("Tokenizing input...")
-        inputs = tokenizer(
-            prompt, return_tensors="pt", padding=True, truncation=True, max_length=4096
-        ).to(device)
+    #     # Load the base model with 8-bit precision
+    #     print("Loading model...")
+    #     # bnb_config = BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=6.0)
 
-        # Generate output
-        print("Generating output...")
-        with torch.no_grad():
-            output = model.generate(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-                max_new_tokens=512,
-                do_sample=False,
-                num_beams=1,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-                use_cache=True,
-            )
+    #     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-        output_text = tokenizer.decode(output[0], skip_special_tokens=True)
-        # generated_answer = output_text[len(prompt) :].strip()
+    #     model = AutoModelForCausalLM.from_pretrained(
+    #         model_path,
+    #         # quantization_config=bnb_config,
+    #         device_map=None,  # Remove or set to None to load the model on a single GPU
+    #     ).to(device)
 
-        # print("Generated Text : ",  output_text)
+    #     # Resize token embeddings in case new tokens were added
+    #     model.resize_token_embeddings(len(tokenizer))
 
-        cleaned_output = self.clean_output(output_text)
-        # print("clened_output: ", cleaned_output)
-        model.to("cpu")
-        self.process_json(cleaned_output)
+    #     # Set the padding token ID
+    #     model.config.pad_token_id = tokenizer.pad_token_id
+
+    #     # Function to format the input question
+
+    #     # Prepare and format the single prompt
+    #     prompt = self.format_question(full_prompt, system_message)
+
+    #     # Tokenize prompt
+    #     print("Tokenizing input...")
+    #     inputs = tokenizer(
+    #         prompt, return_tensors="pt", padding=True, truncation=True, max_length=4096
+    #     ).to(device)
+
+    #     # Generate output
+    #     print("Generating output...")
+    #     with torch.no_grad():
+    #         output = model.generate(
+    #             input_ids=inputs["input_ids"],
+    #             attention_mask=inputs["attention_mask"],
+    #             max_new_tokens=512,
+    #             do_sample=False,
+    #             num_beams=1,
+    #             pad_token_id=tokenizer.pad_token_id,
+    #             eos_token_id=tokenizer.eos_token_id,
+    #             use_cache=True,
+    #         )
+
+    #     output_text = tokenizer.decode(output[0], skip_special_tokens=True)
+    #     # generated_answer = output_text[len(prompt) :].strip()
+
+    #     # print("Generated Text : ",  output_text)
+
+    #     cleaned_output = self.clean_output(output_text)
+    #     # print("clened_output: ", cleaned_output)
+    #     model.to("cpu")
+    #     self.process_json(cleaned_output, image_path)
 
 if __name__ == "__main__":
     utils = Utils("cuda:0")
