@@ -19,6 +19,7 @@ import torch
 
 from diffusers import AutoPipelineForText2Image
 import requests
+import os
 
 
 
@@ -46,6 +47,7 @@ class Utils:
         # )
         
         # Kandinsky model
+        self.image_count = 1
         self.prior_pipeline = KandinskyV22PriorPipeline.from_pretrained("kandinsky-community/kandinsky-2-2-prior", torch_dtype=torch.float16)
         self.pipeline = KandinskyV22Pipeline.from_pretrained("kandinsky-community/kandinsky-2-2-decoder", torch_dtype=torch.float16)
 
@@ -115,7 +117,7 @@ class Utils:
         # self.text2img.to("cpu")
 
         # return image
-        _, negative_image_embeds =  self.prior_pipeline("", "deformed, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality", guidance_scale=2.0, num_inference_steps=5, generator=torch.Generator().manual_seed(42)).to_tuple()
+        _, negative_image_embeds =  self.prior_pipeline("", "deformed, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality", guidance_scale=2.0, num_inference_steps=20, generator=torch.Generator().manual_seed(42)).to_tuple()
         self.pipeline.to(self.device)
         image = self.pipeline(image_embeds=image_embeddings, negative_image_embeds=negative_image_embeds, height=768, width=768, generator=torch.Generator().manual_seed(42)).images[0]
         # self.pipeline.to("cpu")
@@ -145,15 +147,15 @@ class Utils:
             num_inference_steps=50,
             generator=torch.Generator().manual_seed(42),    
         ).images
-        try:
-            image = images[0]
-            if isinstance(image, Image.Image):  # Check if the returned object is indeed a PIL Image
-                image.save("final_image.jpg")
-                print("Image saved successfully as 'final_image.jpg'.")
-            else:
-                print("Error: No valid image was returned from text2image.")
-        except Exception as e:
-            print(f"An error occurred while saving the image: {e}")
+
+        image = images[0]
+        if isinstance(image, Image.Image):
+            folder = "final"
+            os.makedirs(folder, exist_ok=True)
+            image_filename = f"final_image{self.image_count}.jpg"
+            image_path = os.path.join(folder, image_filename)
+            image.save(image_path)
+            self.image_count += 1
         return images[0]
 
     def encode_image(self, image_features):
@@ -169,17 +171,14 @@ class Utils:
         return embedding1 + embedding2
 
     def generate_image_from_embedding(self, embedding):
-        try:
-            image = self.text2image(embedding)
-            if isinstance(image, Image.Image):  # Check if the returned object is indeed a PIL Image
-                image.save("output_image1.jpg")
-                print("Image saved successfully as 'output_image1.jpg'.")
-            else:
-                print("Error: No valid image was returned from text2image.")
-            return image
-        except Exception as e:
-            print(f"An error occurred while saving the image: {e}")
-        
+        image = self.text2image(embedding)
+        if isinstance(image, Image.Image):
+            output_folder = "inter"
+            os.makedirs(output_folder, exist_ok=True)
+            image_filename = f"inter_image{self.image_count}.jpg"
+            image_path = os.path.join(output_folder, image_filename)
+            image.save(image_path)
+        return image
 
 
     def refine_image_with_phrase(self, image, phrase):

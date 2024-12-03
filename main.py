@@ -14,7 +14,7 @@ def process_inputs(final_image_desc: str, folder_path: str):
 
 
 if __name__ == "__main__":
-    final_image_desc = "Final target image description : 'A dog wearing a hat that has a style of tshirt'"
+    final_image_desc = "Final target image description : 'A dog wearing a hat that has a style of dress'"
     folder_path = "cloth"
     
     process_inputs(final_image_desc, folder_path)
