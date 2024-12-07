@@ -63,6 +63,8 @@ class Utils:
         self.device = device
 
         self.results = { 'V0': '', 'T0': '', 'T1': '', 'I0': '', 'I2': '' }
+
+        self.llm_response = ''
         
     def clip_encode_text(self, text):
         # text = self.tokenizer(
@@ -316,18 +318,22 @@ class Utils:
 
         try:
         # Make the GET request to the endpoint
-            response = requests.get(url, params=params, headers=headers)
-
-            # Check if the request was successful
-            if response.status_code == 200:
-                # Parse and use the JSON response
-                data = response.json()
-                print("Response from the endpoint:")
-                print(data)
-                self.process_json(data, image_path)
+            if self.llm_response != '':
+                self.process_json(self.llm_response, image_path)
             else:
-                print(f"Failed to fetch data. HTTP Status Code: {response.status_code}")
-                print(f"Error Message: {response.text}")
+                response = requests.get(url, params=params, headers=headers)
+
+                # Check if the request was successful
+                if response.status_code == 200:
+                    # Parse and use the JSON response
+                    data = response.json()
+                    self.llm_response = data
+                    print("Response from the endpoint:")
+                    print(data)
+                    self.process_json(data, image_path)
+                else:
+                    print(f"Failed to fetch data. HTTP Status Code: {response.status_code}")
+                    print(f"Error Message: {response.text}")
 
         except requests.exceptions.RequestException as e:
             print(f"An error occurred: {e}")
