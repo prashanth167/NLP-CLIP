@@ -155,6 +155,18 @@ class Utils:
             image_filename = f"final_image{self.image_count}.jpg"
             image_path = os.path.join(folder, image_filename)
             image.save(image_path)
+
+
+            embedding_folder = "embeddings"
+            embeddings_filename = f"final_embeddings{self.image_count}.json"
+            embeddings_path = os.path.join(embedding_folder, embeddings_filename)
+            for key, value in self.results.items():
+                print(key, type(value))
+
+            data_serialized = {k: v.tolist() for k, v in self.results.items() if k != 'Generated_Image'}
+            with open(embeddings_path, "w") as file:
+                json.dump(data_serialized, file, indent=4)
+
             self.image_count += 1
         return images[0]
 
@@ -205,7 +217,6 @@ class Utils:
             print(task_type, action, input_text, input_variables, output_variable)
             
 
-
             if task_type == "clip_encode_text":
                 output = self.encode_text(input_text[0])
                 print("clip_encode_text", output)
@@ -216,6 +227,7 @@ class Utils:
                 var1, var2 = input_variables[0], input_variables[1]
                 if action == "subtract":
                     output = self.subtract_embeddings(self.results[var1], self.results[var2])
+                    # output = self.results[var1]
                     print("subtraction", output)
                     self.results[output_variable] = output
 
@@ -235,6 +247,7 @@ class Utils:
                 input_image = self.results['Generated_Image']
                 input_phrase = input_text[0]
                 output = self.refine_image_with_phrase(input_image, input_phrase)
+        
 
     def remove_extra_spaces(self, generated_answer):
         cleaned = re.sub(r'(?<!\w) +| +(?!\w)', '', generated_answer)
@@ -288,7 +301,13 @@ class Utils:
     
     def llm_call(self, final_image_desc, image_path):
         # URL of the endpoint
-        url = "http://54.227.18.106/get-response"
+        url = "http://3.142.196.92/get-response"
+        auth_token = "613534398485e170652d4bda1aca3931"
+        # Headers for the request
+        headers = {
+            "Authorization": auth_token
+        }
+
 
         # Parameters to send with the GET request
         params = {
@@ -297,7 +316,7 @@ class Utils:
 
         try:
         # Make the GET request to the endpoint
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, headers=headers)
 
             # Check if the request was successful
             if response.status_code == 200:
