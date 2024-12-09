@@ -8,18 +8,19 @@ from transformers import (
     AutoModelForCausalLM,
 )
 from diffusers import DiffusionPipeline, StableDiffusionPipeline
+from diffusers import KandinskyV22PriorPipeline, KandinskyV22Pipeline, AutoPipelineForText2Image
+
 from ip_adapter import IPAdapterXL
+
 import json
-import re
 from peft import PeftModel
 from PIL import Image
+import torch.nn.functional as F
 
-from diffusers import KandinskyV22PriorPipeline, KandinskyV22Pipeline
-import torch
-
-from diffusers import AutoPipelineForText2Image
 import requests
 import os
+import re
+import pandas as pd
 
 
 
@@ -65,6 +66,11 @@ class Utils:
         self.results = { 'V0': '', 'T0': '', 'T1': '', 'I0': '', 'I2': '' }
 
         self.llm_response = ''
+        self.input_embedding = None
+        self.output_image = None
+        self.output_name = None
+        self.input_name = None
+        self.df = pd.DataFrame(columns=['input_image', 'output_image', 'similarity'])
         
     def clip_encode_text(self, text):
         # text = self.tokenizer(
@@ -124,6 +130,24 @@ class Utils:
         image = self.pipeline(image_embeds=image_embeddings, negative_image_embeds=negative_image_embeds, height=768, width=768, generator=torch.Generator().manual_seed(42)).images[0]
         # self.pipeline.to("cpu")
         return image 
+    
+    def image_similarity_score(self, embedding1, image2):
+        embedding2 = self.clip_encode_image(image2)
+
+        # Ensure both embeddings are on the same device and of the same shape
+        embedding1 = embedding1.to(self.device)
+        embedding2 = embedding2.to(self.device)
+
+        # Step 2: Normalize the embeddings along the embedding dimension
+        embedding1 = F.normalize(embedding1, p=2, dim=-1)
+        embedding2 = F.normalize(embedding2, p=2, dim=-1)
+
+        # Step 3: Compute cosine similarity
+        # Since these are normalized, their dot product is the cosine similarity
+        similarity = torch.mm(embedding1, embedding2.T).item()
+
+        return similarity
+
 
     def ipadapter_text2image(self, text, image=None):
         # self.text2img.load_ip_adapter(
@@ -157,7 +181,8 @@ class Utils:
             image_filename = f"final_image{self.image_count}.jpg"
             image_path = os.path.join(folder, image_filename)
             image.save(image_path)
-
+            self.output_image = image
+            self.output_name = image_filename
 
             embedding_folder = "embeddings"
             embeddings_filename = f"final_embeddings{self.image_count}.json"
@@ -185,6 +210,7 @@ class Utils:
         return embedding1 + embedding2
 
     def generate_image_from_embedding(self, embedding):
+        self.input_embedding = embedding
         image = self.text2image(embedding)
         if isinstance(image, Image.Image):
             output_folder = "inter"
